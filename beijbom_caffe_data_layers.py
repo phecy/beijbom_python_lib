@@ -1,6 +1,7 @@
 # standard python imports
 import os.path
 import json
+import time
 from random import shuffle
 from threading import Thread
 import numpy as np
@@ -60,7 +61,9 @@ class RandomPointDataLayer(caffe.Layer):
 
     def forward(self, bottom, top):
         if self.thread is not None:
-            self.join_worker() 
+            t0 = time.clock()
+            self.join_worker()
+            print "Waited ", time.clock() - t0, "seconds for PatchBatchAdvancer."
 
         for top_index, name in zip(range(len(top)), self.top_names):
             for i in range(self.batch_size):
@@ -97,6 +100,7 @@ class PatchBatchAdvancer():
         self.crop_size = crop_size
         self.transformer = transformer
         self._cur = 0
+        shuffle(self.imlist)
         print "The mighty PatchBatchAdvancer is initialized with {} images, {} imgs per batch, and {}x{} pixel patches".format(len(imlist), imgs_per_batch, crop_size, crop_size)
 
     def __call__(self):
@@ -132,21 +136,30 @@ class PatchBatchAdvancer():
             point_anns = [point_anns[pp] for pp in np.random.choice(len(point_anns), size = npatches, replace = True)]
 
             # Load image
+            t0 = time.clock()
             im = np.asarray(Image.open(imname))
+            print time.clock() - t0, "seconds to load image."
+            
             scale = 1 # just building for the future
             if not scale == 1:
+                print "Resizing image."
                 im = scipy.misc.imresize(im, scale) 
-            offset = np.asarray(im.shape[:2])
-            im = tile_image(im)        
-            
+                        
+            t0 = time.clock()
+            #im = tile_image(im)
+            im = np.pad(im, ((self.crop_size, self.crop_size),(self.crop_size, self.crop_size), (0, 0)), mode='reflect')        
+            #im = np.tile(im, (3, 3, 1))
+            print time.clock() - t0, "seconds to tile image."
             # crop patches
+            # t0 = time.clock()
             for ((row, col, label), angle) in zip(point_anns, angles):
                 # print "processing row:{}, col:{}, label:{}, angle:{}, from image:{}".format(row, col, label, angle, imname)
                 center_org = np.asarray([row, col])
-                center = np.round(offset + center_org * scale).astype(np.int)
+                center = np.round(self.crop_size + center_org * scale).astype(np.int)
                 patch = self.transformer(crop_and_rotate(im, center, self.crop_size, angle, tile = False))
                 self.result['data'].append(patch)
                 self.result['labels'].append(label)
+            print time.clock() - t0, "seconds to crop, rotate, and transform patches."
 
     def chunkify(self, k, n):
         """ 

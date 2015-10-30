@@ -1,4 +1,4 @@
-import glob, os, math, colorsys, scipy
+import glob, os, math, colorsys, scipy, time
 from PIL import Image
 import numpy as np
 import matplotlib.pyplot as plt
@@ -38,8 +38,15 @@ def crop_and_rotate(im, center, ps, angle, tile = False):
     psbig = int(tmp) if ps % 2 == 0 else int(tmp) + 1
     el = [psbig / 2, psbig/2] if psbig % 2 == 0 else [psbig / 2, psbig/2 + 1] # edge length
     bigpatch = im[center[0] - el[0] : center[0] + el[1], center[1] - el[0]:center[1] + el[1], :] # crop big patch
-    return(crop_center(scipy.ndimage.interpolation.rotate(bigpatch, angle), ps))
-    
+    #t0 = time.clock()
+    # print time.clock() - t0, "seconds to load rotate a single patch."
+    return(crop_center(rotate_with_PIL(bigpatch, angle), ps))
+
+def rotate_with_PIL(im, angle):
+    im = Image.fromarray(im)
+    im.rotate(angle)
+    return np.asarray(im)
+
 def tile_image(im):
     """
     tiles input image so that all edges are mirrored
