@@ -1,4 +1,5 @@
-import glob, os, Image, math, colorsys, scipy
+import glob, os, math, colorsys, scipy
+from PIL import Image
 import numpy as np
 import matplotlib.pyplot as plt
 from pylab import *
@@ -49,7 +50,7 @@ def tile_image(im):
     return(np.concatenate((r1, r2,r3), 0))
 
 
-def vis_square(data, padsize=1, padval=0):
+def vis_square(data, padsize=1, padval=0, scale = 1):
     """
     This function is from the caffe tutorials. Takes
 
@@ -61,7 +62,7 @@ def vis_square(data, padsize=1, padval=0):
     """
 
     data -= data.min()
-    data /= data.max()
+    data *= scale
     
     # force the number of filters to be square
     n = int(np.ceil(np.sqrt(data.shape[0])))

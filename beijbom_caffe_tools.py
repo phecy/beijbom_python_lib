@@ -59,7 +59,6 @@ class Transformer:
 		for channel, channel_mean in list(enumerate(self.mean)):
 			im[:, :, channel] = im[:, :, channel] + np.ones(im.shape[:2], dtype=np.uint8) * channel_mean
 		
-		im = im[:,:,::-1]
 		return np.uint8(im)
 
 
