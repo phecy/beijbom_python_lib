@@ -6,6 +6,8 @@ from random import shuffle
 from threading import Thread
 import numpy as np
 from PIL import Image
+from timeit import default_timer as timer
+import skimage.io
 
 # own class imports
 import caffe
@@ -29,6 +31,8 @@ class RandomPointDataLayer(caffe.Layer):
         assert 'im_scale' in params.keys(), 'Params must include im_scale.'
         assert 'im_mean' in params.keys(), 'Params must include im_mean.'
 
+        self.t0 = 0
+        self.t1 = 0
         self.batch_size = params['batch_size']
         crop_size = params['crop_size']
         imgs_per_batch = params['imgs_per_batch']
@@ -60,15 +64,16 @@ class RandomPointDataLayer(caffe.Layer):
         pass
 
     def forward(self, bottom, top):
+        #print time.clock() - self.t0, "seconds since last call to forward."
         if self.thread is not None:
-            t0 = time.clock()
+            #self.t1 = timer()
             self.join_worker()
-            print "Waited ", time.clock() - t0, "seconds for PatchBatchAdvancer."
+            #print "Waited ", timer() - self.t1, "seconds for join."
 
         for top_index, name in zip(range(len(top)), self.top_names):
             for i in range(self.batch_size):
                 top[top_index].data[i, ...] = self.thread_result[name][i] 
-
+        #self.t0 = time.clock()
         self.dispatch_worker()
 
     def dispatch_worker(self):
@@ -100,16 +105,18 @@ class PatchBatchAdvancer():
         self.crop_size = crop_size
         self.transformer = transformer
         self._cur = 0
+        self.t1 = 0
+        self.t00 = 0
         shuffle(self.imlist)
-        print "The mighty PatchBatchAdvancer is initialized with {} images, {} imgs per batch, and {}x{} pixel patches".format(len(imlist), imgs_per_batch, crop_size, crop_size)
+        print "PatchBatchAdvancer is initialized with {} images, {} imgs per batch, and {}x{} pixel patches".format(len(imlist), imgs_per_batch, crop_size, crop_size)
 
     def __call__(self):
-
+        self.t1 = timer()
         self.result['data'] = []
         self.result['labels'] = []
 
         if self._cur + self.imgs_per_batch > len(self.imlist):
-            print "The mighty PatchBatchAdvancer finished an epoch. Shuffling image list"
+            # print "PatchBatchAdvancer finished an epoch. Shuffling image list"
             self._cur = 0
             shuffle(self.imlist)
         
@@ -120,9 +127,9 @@ class PatchBatchAdvancer():
         patches_per_image = self.chunkify(self.batch_size, self.imgs_per_batch)
 
         # Make nice output string
-        output_str = [str(npatches) + ' from ' + os.path.basename(imname) + '(id ' + str(itt) + ')' for imname, npatches, itt in zip(imnames, patches_per_image, range(self._cur, self._cur + self.imgs_per_batch))]
+        # output_str = [str(npatches) + ' from ' + os.path.basename(imname) + '(id ' + str(itt) + ')' for imname, npatches, itt in zip(imnames, patches_per_image, range(self._cur, self._cur + self.imgs_per_batch))]
         
-        print "The mighty PatchBatchAdvancer is producing patches: [{}]".format(", ".join(output_str))
+        
         # Loop over each image
         for imname, npatches in zip(imnames, patches_per_image):
             self._cur += 1
@@ -135,31 +142,29 @@ class PatchBatchAdvancer():
             point_anns = self.imdict[os.path.basename(imname)][0]
             point_anns = [point_anns[pp] for pp in np.random.choice(len(point_anns), size = npatches, replace = True)]
 
-            # Load image
-            t0 = time.clock()
-            im = np.asarray(Image.open(imname))
-            print time.clock() - t0, "seconds to load image."
             
-            scale = 1 # just building for the future
-            if not scale == 1:
-                print "Resizing image."
-                im = scipy.misc.imresize(im, scale) 
-                        
-            t0 = time.clock()
-            #im = tile_image(im)
+            # Load image
+            # self.t00 = time.clock()
+            im = np.asarray(Image.open(imname))
+            # print "Image load time:{}".format(time.clock() - self.t00)
+            
+            scale = 1
+
+            # Pad the boundaries                        
+            # self.t0 = time.clock()
             im = np.pad(im, ((self.crop_size, self.crop_size),(self.crop_size, self.crop_size), (0, 0)), mode='reflect')        
-            #im = np.tile(im, (3, 3, 1))
-            print time.clock() - t0, "seconds to tile image."
-            # crop patches
+            # print "Image pad time:{}".format(time.clock() - self.t0)
+
             # t0 = time.clock()
             for ((row, col, label), angle) in zip(point_anns, angles):
-                # print "processing row:{}, col:{}, label:{}, angle:{}, from image:{}".format(row, col, label, angle, imname)
                 center_org = np.asarray([row, col])
                 center = np.round(self.crop_size + center_org * scale).astype(np.int)
                 patch = self.transformer(crop_and_rotate(im, center, self.crop_size, angle, tile = False))
                 self.result['data'].append(patch)
                 self.result['labels'].append(label)
-            print time.clock() - t0, "seconds to crop, rotate, and transform patches."
+            # print "TMPDA needed {} secs to process {} patches".format(time.clock() - t0, len(angles))
+            
+        # print "PatchBatchAdvancer produced patches: [{}] in {} seconds.".format(", ".join(output_str), timer() - self.t1)
 
     def chunkify(self, k, n):
         """ 
