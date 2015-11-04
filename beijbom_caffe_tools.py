@@ -8,6 +8,7 @@ from pylab import *
 from copy import deepcopy, copy
 import cPickle as pickle
 from tqdm import tqdm
+from settings import CAFFEPATH
 
 """
 beijbom_caffe_tools (bct) contains classes and wrappers for caffe.
@@ -74,7 +75,7 @@ class CaffeSolver:
         self.sp = {}
 
         # critical:
-        self.sp['base_lr'] = '1e-10'
+        self.sp['base_lr'] = '0.001'
         self.sp['momentum'] = '0.9'
         
         # speed:
@@ -98,7 +99,7 @@ class CaffeSolver:
         # pretty much never change these.
         self.sp['max_iter'] = '100000'
         self.sp['test_initialization'] = 'false'
-        self.sp['average_loss'] = '1' # this has to do with the display.
+        self.sp['average_loss'] = '25' # this has to do with the display.
         self.sp['iter_size'] = '1' #this is for accumulating gradients
 
         if (debug):
@@ -113,6 +114,8 @@ class CaffeSolver:
         """
         with open(filepath, 'r') as f:
             for line in f:
+                if line[0] == '#':
+                    continue
                 splitLine = line.split(':')
                 self.sp[splitLine[0].strip()] = splitLine[1].strip()
         return 1
@@ -130,16 +133,14 @@ class CaffeSolver:
 
 
 
-
-
-def run(workdir = None, caffemodel = 'weights.caffemodel', GPU_id = 0,solver = 'solver.prototxt', log = 'train.log', snapshot_prefix = 'snapshot', caffepath = '/home/beijbom/cc/build/tools/caffe', restart = False):
+def run(workdir = None, caffemodel = 'weights.caffemodel', GPU_id = 0, solverfile = 'solver.prototxt', log = 'train.log', snapshot_prefix = 'snapshot', caffepath = CAFFEPATH, restart = False, nbr_iters = None):
     """
     run is a simple caffe wrapper for training nets. It basically does two things. (1) ensures that training continues from the most recent model, and (2) makes sure the output is captured in a log file.
 
     Takes
     workdir: directory where the net prototxt lives.
     caffemodel: name of a stored caffemodel.
-    solver: name of solver.prototxt [this refers, in turn, to net.prototxt]
+    solverfile: name of solver.prototxt [this refers, in turn, to net.prototxt]
     log: name of log file
     snapshot_prefix: snapshot prefix. 
     caffepath: path the caffe binaries. This is required since we make a system call to caffe.
@@ -148,29 +149,44 @@ def run(workdir = None, caffemodel = 'weights.caffemodel', GPU_id = 0,solver = '
     """
 
     # finds the latest snapshots
-    snapshots = glob.glob("/{}/{}*.solverstate".format(workdir, snapshot_prefix))
+    snapshots = glob.glob(os.path.join(workdir, "{}*.solverstate".format(snapshot_prefix)))
     if snapshots:
         _iter = [int(f[f.index('iter_')+5:f.index('.')]) for f in snapshots]
-        latest_snapshot = snapshots[np.argmax(_iter)]
-    
+        max_iter = np.max(_iter)
+        latest_snapshot = os.path.basename(snapshots[np.argmax(_iter)])
+    else:
+        max_iter = 0
+
+    # update solver with new max_iter parameter (if asked for)
+    if not nbr_iters is None: 
+        solver = CaffeSolver()
+        solver.add_from_file(os.path.join(workdir, solverfile))
+        solver.sp['max_iter'] = str(max_iter + nbr_iters)
+        solver.sp['snapshot'] = str(1000000) #disable this, don't need it.
+        solver.write(os.path.join(workdir, solverfile))
+
+    print caffepath
     # by default, start from the most recent snapshot
     if snapshots and not(restart): 
-        print("Running from iter {}.".format(np.max(_iter)))
-        runstring  = 'cd {}; {} train -solver {} -snapshot {} -gpu {} 2>&1 | tee -a {}'.format(workdir, caffepath, solver, latest_snapshot, GPU_id, log)
+        print "Running {} from iter {}.".format(workdir, np.max(_iter))
+        runstring  = 'cd {}; {} train -solver {} -snapshot {} -gpu {} 2>&1 | tee -a {}'.format(workdir, caffepath, solverfile, latest_snapshot, GPU_id, log)
 
     # else, start from a pre-trained net defined in caffemodel
     elif(caffemodel): 
         if(os.path.isfile(os.path.join(workdir, caffemodel))):
-            print("Fine tuning from {}.".format(os.path.join(workdir, caffemodel)))
-            runstring  = 'cd {}; {} train -solver {} -weights {} -gpu {} 2>&1 | tee -a {}'.format(workdir, caffepath, solver, caffemodel, GPU_id, log)
+            print "Fine tuning {} from {}.".format(workdir, caffemodel)
+            runstring  = 'cd {}; {} train -solver {} -weights {} -gpu {} 2>&1 | tee -a {}'.format(workdir, caffepath, solverfile, caffemodel, GPU_id, log)
+
         else:
             raise IOError("Can't fine intial weight file: " + os.path.join(workdir, caffemodel))
 
     # Train from scratch. Not recommended for larger nets.
     else: 
-        print("No caffemodel specified. Running from scratch!!")
-        runstring  = 'cd {}; {} train -solver {} -gpu {} 2>&1 | tee -a {}'.format(workdir, caffepath, solver, GPU_id, log)
+        print "No caffemodel specified. Running {} from scratch!!".format(workdir)
+        runstring  = 'cd {}; {} train -solver {} -gpu {} 2>&1 | tee -a {}'.format(workdir, caffepath, solverfile, GPU_id, log)
     os.system(runstring)
+
+
 
 def classify(workdir, scorelayer, caffemodel = None, GPU_id = 0, snapshot_prefix = 'snapshot', net_prototxt = 'net.prototxt', save = False, ignore_label = np.inf, n_testinstances = None, batch_size = None):
     """
@@ -287,22 +303,8 @@ def cycle_runs(run_params, test_params, cycle_sizes, ncycles, classify = True):
             # add defaults to run_parameter dict
             for key in list(set(run_defaults) - set(params)):
                 params[key] = run_defaults[key]
-            # find the current iteration
-            snapshots = glob.glob(os.path.join(params['workdir'], "{}*.solverstate".format(params['snapshot_prefix'])))
-            if snapshots:
-                _iter = [int(f[f.index('iter_')+5:f.index('.')]) for f in snapshots]
-                max_iter = np.max(_iter) + cycle_size - 1
-            else:
-                max_iter = cycle_size - 1
-
-            # update solver with new max_iter parameter
-            solver = CaffeSolver()
-            solver.add_from_file(os.path.join(params['workdir'], params['solver']))
-            solver.sp['max_iter'] = str(max_iter)
-            solver.sp['snapshot'] = str(1000000) #disable this, don't need it.
-            solver.write(os.path.join(params['workdir'], params['solver']))
-            print("Running {} from {} to {} itts.".format(params['workdir'], max_iter-cycle_size+1, max_iter+1))
-            run(**params)
+            params['nbr_iters'] = cycle_size
+            run(**params)        
 
             if classify:
                 # classify all *net.prototxt in workdir
@@ -432,15 +434,15 @@ def classify_imlist(im_list, net, transformer, batch_size, scorelayer, startlaye
 
 def classify_from_patchlist(imlist, imdict, crop_size, transformer, batch_size, workdir, scorelayer = 'fc8_new', startlayer = 'conv1_1', net_prototxt = 'net.prototxt', GPU_id = 0, snapshot_prefix = 'snapshot', save=False):
     
-    caffemodel = find_latest_snapshot(workdir, snapshot_prefix = snapshot_prefix)
-    print caffemodel
+    caffemodel = find_latest_caffemodel(workdir, snapshot_prefix = snapshot_prefix)
     net = load_model(workdir, caffemodel, GPU_id = GPU_id, net_prototxt = net_prototxt)
 
     estlist = []
     scorelist = []
     gtlist = []
+    print "classifying {} images in {} using {}".format(len(imlist), workdir, caffemodel)
     for imname in imlist:
-        # print "classifying {} out of {}".format(imlist.index(imname), len(imlist))
+        
         patchlist = []
         (point_anns, scale) = imdict[os.path.basename(imname)]
         im = Image.open(imname)
@@ -459,7 +461,7 @@ def classify_from_patchlist(imlist, imdict, crop_size, transformer, batch_size, 
     return [gtlist, estlist, scorelist]
 
 
-def find_latest_snapshot(workdir, snapshot_prefix = 'snapshot'):
+def find_latest_caffemodel(workdir, snapshot_prefix = 'snapshot'):
     
     caffemodels = glob.glob("{}*.caffemodel".format(os.path.join(workdir, snapshot_prefix)))
     if caffemodels:
@@ -467,3 +469,27 @@ def find_latest_snapshot(workdir, snapshot_prefix = 'snapshot'):
         return os.path.basename(caffemodels[np.argmax(_iter)])
     else:
         raise IOError("Can't find a trained model in " + workdir + " using prefix: " + snapshot_prefix + ".")
+
+
+def calculate_image_mean(imlist):
+    mean = np.zeros(3).astype(np.float32)
+    for imname in imlist:
+        im = np.asarray(Image.open(imname))
+        im = np.mean(im, axis = 0)
+        im = np.mean(im, axis = 0)
+        mean = mean + im
+    mean /= len(imlist)
+    print mean
+
+
+def clean_workdirs(workdirs):
+    for workdir in workdirs:
+        for file_ in glob.glob(os.path.join(workdir, 'snapshot*')):
+            if os.path.isfile(file_):
+                os.remove(file_)
+        for file_ in glob.glob(os.path.join(workdir, 'predictions_*')):
+            if os.path.isfile(file_):
+                os.remove(file_)
+        file_ = os.path.join(workdir, 'train.log')
+        if os.path.isfile(file_):                
+            os.remove(file_)
