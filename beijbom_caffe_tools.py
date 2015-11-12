@@ -468,7 +468,8 @@ def find_latest_caffemodel(workdir, snapshot_prefix = 'snapshot'):
         _iter = [int(f[f.index('iter_')+5:f.index('.')]) for f in caffemodels]
         return os.path.basename(caffemodels[np.argmax(_iter)])
     else:
-        raise IOError("Can't find a trained model in " + workdir + " using prefix: " + snapshot_prefix + ".")
+        print "Can't find a trained model in " + workdir + " using prefix: " + snapshot_prefix + "."
+        return None
 
 
 def calculate_image_mean(imlist):
@@ -490,6 +491,6 @@ def clean_workdirs(workdirs):
         for file_ in glob.glob(os.path.join(workdir, 'predictions_*')):
             if os.path.isfile(file_):
                 os.remove(file_)
-        file_ = os.path.join(workdir, 'train.log')
-        if os.path.isfile(file_):                
-            os.remove(file_)
+        for file_ in glob.glob(os.path.join(workdir, '*.log')):
+            if os.path.isfile(file_):
+                os.remove(file_)
