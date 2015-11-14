@@ -133,7 +133,7 @@ class CaffeSolver:
 
 
 
-def run(workdir = None, caffemodel = 'weights.caffemodel', GPU_id = 0, solverfile = 'solver.prototxt', log = 'train.log', snapshot_prefix = 'snapshot', caffepath = CAFFEPATH, restart = False, nbr_iters = None):
+def run(workdir = None, caffemodel = None, GPU_id = 0, solverfile = 'solver.prototxt', log = 'train.log', snapshot_prefix = 'snapshot', caffepath = CAFFEPATH, restart = False, nbr_iters = None):
     """
     run is a simple caffe wrapper for training nets. It basically does two things. (1) ensures that training continues from the most recent model, and (2) makes sure the output is captured in a log file.
 
@@ -147,6 +147,10 @@ def run(workdir = None, caffemodel = 'weights.caffemodel', GPU_id = 0, solverfil
     restart: determines whether to restart even if there are snapshots in the directory.
 
     """
+
+    # find initial caffe model
+    if not caffemodel:
+        caffemodel = os.path.basename(glob.glob(os.path.join(workdir, "*initial.caffemodel"))[0])
 
     # finds the latest snapshots
     snapshots = glob.glob(os.path.join(workdir, "{}*.solverstate".format(snapshot_prefix)))
@@ -492,5 +496,8 @@ def clean_workdirs(workdirs):
             if os.path.isfile(file_):
                 os.remove(file_)
         for file_ in glob.glob(os.path.join(workdir, '*.log')):
+            if os.path.isfile(file_):
+                os.remove(file_)
+	for file_ in glob.glob(os.path.join(workdir, '*.testlog')):
             if os.path.isfile(file_):
                 os.remove(file_)
