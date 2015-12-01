@@ -192,7 +192,7 @@ def run(workdir = None, caffemodel = None, GPU_id = 0, solverfile = 'solver.prot
 
 
 
-def classify(workdir, scorelayer, caffemodel = None, GPU_id = 0, snapshot_prefix = 'snapshot', net_prototxt = 'net.prototxt', save = False, ignore_label = np.inf, n_testinstances = None, batch_size = None):
+def classify(workdir, scorelayer, caffemodel = None, GPU_id = 0, labellayer = 'label', snapshot_prefix = 'snapshot', net_prototxt = 'net.prototxt', save = False, ignore_label = np.inf, n_testinstances = None, batch_size = None):
     """
     classify runs a trained net on a testset defined in a net.prototxt file and returns the ground truth, estimated labels and the score vectors.
 
@@ -249,11 +249,11 @@ def classify(workdir, scorelayer, caffemodel = None, GPU_id = 0, snapshot_prefix
     gtlist = []
     scorelist = []
     for test_itt in tqdm(range(n_testinstances//batch_size + 1)):
-        if net.blobs['label'].data.ndim == 1:
-            gtlist.extend(list(copy(net.blobs['label'].data).astype(np.uint8)))
+        if net.blobs[labellayer].data.ndim == 1:
+            gtlist.extend(list(copy(net.blobs[labellayer].data).astype(np.uint8)))
             scorelist.extend(list(copy(net.blobs[scorelayer].data).astype(np.float)))
         else:
-            gt = copy(net.blobs['label'].data.transpose(0, 2, 3, 1)).astype(np.uint8)
+            gt = copy(net.blobs[labellayer].data.transpose(0, 2, 3, 1)).astype(np.uint8)
             scores = copy(net.blobs[scorelayer].data.transpose(0, 2, 3, 1)).astype(np.float)
             nclasses = scores.shape[3]
             gt = np.repeat(gt, nclasses, axis = 3)
@@ -265,7 +265,7 @@ def classify(workdir, scorelayer, caffemodel = None, GPU_id = 0, snapshot_prefix
         net.forward()
 
     # If the net is not a FCN we need to cut of the lists (since the last iteration may be looping around)
-    if net.blobs['label'].data.ndim == 1: 
+    if net.blobs[labellayer].data.ndim == 1: 
         gtlist = gtlist[:n_testinstances]
         scorelist = scorelist[:n_testinstances]
 
