@@ -5,11 +5,37 @@ import matplotlib.pyplot as plt
 from pylab import *
 from copy import deepcopy
 import scipy.ndimage
+import pickle
 
 """
 beijbom_pytools contains a bunch of nice misc python tools 
 """
 
+
+def psave(var, filename):
+    """
+    psave pickles and save var to filename
+    """
+    pickle.dump(var, open(filename, 'wb'))
+
+def pload(filename):
+    """
+    pload opens and unpickles content of filename
+    """
+    return pickle.load(open(filename, 'rb'))
+
+
+def coral_image_resize(im, scaling_method, scaling_factor, height_cm):
+    """
+    resizes the image according to convention used in the data layers.
+    """
+
+    if scaling_method == 'scale':
+       scale = scaling_factor # here scaling_factor is the desired image scaling.
+    elif scaling_method == 'ratio':
+        scale = scaling_factor * height_cm / im.shape[0] # here scaling_factor is the desited px_cm_ratio.
+    im = scipy.misc.imresize(im, scale)
+    return (im, scale)
 
 def crop_center(im, ps):
     """

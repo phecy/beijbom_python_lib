@@ -9,6 +9,8 @@ from copy import deepcopy, copy
 import cPickle as pickle
 from tqdm import tqdm
 from settings import CAFFEPATH
+from caffe import layers as L, params as P
+from beijbom_misc_tools import coral_image_resize, crop_and_rotate
 
 """
 beijbom_caffe_tools (bct) contains classes and wrappers for caffe.
@@ -20,9 +22,9 @@ class Transformer:
     Transformer is a class for preprocessing and deprocessing images according to the vgg16 pre-processing paradigm (scaling and mean subtraction.)
     """
 
-    def __init__(self):
-        self.mean = []
-        self.scale = []
+    def __init__(self, mean = [0, 0, 0]):
+        self.mean = mean
+        self.scale = 1.0
 
     def set_mean(self, mean):
         """
@@ -70,7 +72,7 @@ class CaffeSolver:
     Note that all parameters are stored as strings. For technical reasons, the strings are stored as strings within strings.
     """
 
-    def __init__(self, net_prototxt_path = "net.prototxt", debug = False):
+    def __init__(self, testnet_prototxt_path = "testnet.prototxt", trainnet_prototxt_path = "trainnet.prototxt", debug = False):
         
         self.sp = {}
 
@@ -88,13 +90,13 @@ class CaffeSolver:
         self.sp['snapshot_prefix'] = '"snapshot"' # string withing a string!
         
         # learning rate policy
-        self.sp['lr_policy'] = '"step"'
-        self.sp['stepsize'] = '100000'
+        self.sp['lr_policy'] = '"fixed"'
 
         # important, but rare:
         self.sp['gamma'] = '0.1'
         self.sp['weight_decay'] = '0.0005'
-        self.sp['net'] = '"' + net_prototxt_path + '"'
+        self.sp['train_net'] = '"' + trainnet_prototxt_path + '"'
+        self.sp['test_net'] = '"' + testnet_prototxt_path + '"'
 
         # pretty much never change these.
         self.sp['max_iter'] = '100000'
@@ -436,30 +438,40 @@ def classify_imlist(im_list, net, transformer, batch_size, scorelayer, startlaye
     
     return(estlist, scorelist)
 
-def classify_from_patchlist(imlist, imdict, crop_size, transformer, batch_size, workdir, scorelayer = 'fc8_new', startlayer = 'conv1_1', net_prototxt = 'net.prototxt', GPU_id = 0, snapshot_prefix = 'snapshot', save=False):
-    
+
+def classify_from_patchlist(imlist, imdict, pyparams, workdir, scorelayer = 'score', startlayer = 'conv1_1', net_prototxt = 'testnet.prototxt', GPU_id = 0, snapshot_prefix = 'snapshot', save = False):
+
+    # Preliminaries    
     caffemodel = find_latest_caffemodel(workdir, snapshot_prefix = snapshot_prefix)
     net = load_model(workdir, caffemodel, GPU_id = GPU_id, net_prototxt = net_prototxt)
-
-    estlist = []
-    scorelist = []
-    gtlist = []
+    transformer = Transformer(pyparams['im_mean'])
+    estlist, scorelist, gtlist = [], [], []
+    
     print "classifying {} images in {} using {}".format(len(imlist), workdir, caffemodel)
-    for imname in imlist:
+    for imname in tqdm(imlist):
         
         patchlist = []
-        (point_anns, scale) = imdict[os.path.basename(imname)]
-        im = Image.open(imname)
-        im = np.pad(im, ((crop_size, crop_size),(crop_size, crop_size), (0, 0)), mode='reflect')
+        (point_anns, height_cm) = imdict[os.path.basename(imname)]
+
+        # Load image
+        im = np.asarray(Image.open(imname))
+        (im, scale) = coral_image_resize(im, pyparams['scaling_method'], pyparams['scaling_factor'], height_cm) #resize.
+
+        # Pad the boundaries                        
+        im = np.pad(im, ((pyparams['crop_size']*2, pyparams['crop_size']*2),(pyparams['crop_size']*2, pyparams['crop_size']*2), (0, 0)), mode='reflect')        
+        
+        # Extract patches
         for (row, col, label) in point_anns:
             center_org = np.asarray([row, col])
-            center = np.round(crop_size + center_org * scale).astype(np.int)
-            patchlist.append(bmt.crop_and_rotate(im, center, crop_size, 0, tile = False))
+            center = np.round(pyparams['crop_size']*2 + center_org * scale).astype(np.int)
+            patchlist.append(crop_and_rotate(im, center, pyparams['crop_size'], 0, tile = False))
             gtlist.append(label)
 
-        [this_estlist, this_scorelist] = classify_imlist(patchlist, net, transformer, batch_size, scorelayer = scorelayer, startlayer = startlayer)
+        # Classify and append
+        [this_estlist, this_scorelist] = classify_imlist(patchlist, net, transformer, pyparams['batch_size'], scorelayer = scorelayer, startlayer = startlayer)
         estlist.extend(this_estlist)
         scorelist.extend(this_scorelist)
+        
     if (save):
         pickle.dump((gtlist, estlist, scorelist), open(os.path.join(workdir, 'predictions_using_' + caffemodel +  '.p'), 'wb'))
     return [gtlist, estlist, scorelist]
@@ -476,7 +488,7 @@ def find_latest_caffemodel(workdir, snapshot_prefix = 'snapshot'):
         return None
 
 
-def calculate_image_mean(imlist):
+def calculate_image_mean(imlist): 
     mean = np.zeros(3).astype(np.float32)
     for imname in imlist:
         im = np.asarray(Image.open(imname))
@@ -485,6 +497,7 @@ def calculate_image_mean(imlist):
         mean = mean + im
     mean /= len(imlist)
     print mean
+    return mean
 
 
 def clean_workdirs(workdirs):
@@ -501,3 +514,68 @@ def clean_workdirs(workdirs):
 	for file_ in glob.glob(os.path.join(workdir, '*.testlog')):
             if os.path.isfile(file_):
                 os.remove(file_)
+
+
+
+def vgg(pydata_params, data_layer, nclasses, ntop = 2, acclayer = False):
+    n = caffe.NetSpec()
+    n.data, n.label = L.Python(module = 'beijbom_caffe_data_layers', layer = data_layer,
+            ntop=ntop, param_str=str(pydata_params))
+
+    n.conv1_1, n.relu1_1 = conv_relu(n.data, 64)
+    n.conv1_2, n.relu1_2 = conv_relu(n.relu1_1, 64)
+    n.pool1 = max_pool(n.relu1_2)
+
+    n.conv2_1, n.relu2_1 = conv_relu(n.pool1, 128)
+    n.conv2_2, n.relu2_2 = conv_relu(n.relu2_1, 128)
+    n.pool2 = max_pool(n.relu2_2)
+
+    n.conv3_1, n.relu3_1 = conv_relu(n.pool2, 256)
+    n.conv3_2, n.relu3_2 = conv_relu(n.relu3_1, 256)
+    n.conv3_3, n.relu3_3 = conv_relu(n.relu3_2, 256)
+    n.pool3 = max_pool(n.relu3_3)
+
+    n.conv4_1, n.relu4_1 = conv_relu(n.pool3, 512)
+    n.conv4_2, n.relu4_2 = conv_relu(n.relu4_1, 512)
+    n.conv4_3, n.relu4_3 = conv_relu(n.relu4_2, 512)
+    n.pool4 = max_pool(n.relu4_3)
+
+    n.conv5_1, n.relu5_1 = conv_relu(n.pool4, 512)
+    n.conv5_2, n.relu5_2 = conv_relu(n.relu5_1, 512)
+    n.conv5_3, n.relu5_3 = conv_relu(n.relu5_2, 512)
+    n.pool5 = max_pool(n.relu5_3)
+
+    n.fc6 = L.InnerProduct(n.pool5, num_output=4096,
+        param=[dict(lr_mult=1, decay_mult=1), dict(lr_mult=2, decay_mult=0)])
+
+    n.relu6 = L.ReLU(n.fc6, in_place=True)
+    n.drop6 = L.Dropout(n.relu6, dropout_ratio=0.5, in_place=True)
+
+    n.fc7 = L.InnerProduct(n.fc6, num_output=4096,
+        param=[dict(lr_mult=1, decay_mult=1), dict(lr_mult=2, decay_mult=0)])
+
+    n.relu7 = L.ReLU(n.fc7, in_place=True)
+    n.drop7 = L.Dropout(n.relu7, dropout_ratio=0.5, in_place=True)
+
+    n.score = L.InnerProduct(n.fc7, num_output=nclasses,
+        param=[dict(lr_mult=5, decay_mult=1), dict(lr_mult=10, decay_mult=0)])
+
+    n.loss = L.SoftmaxWithLoss(n.score, n.label)
+    
+    if acclayer:
+        n.accuracy = L.Accuracy(n.score, n.label)
+
+    return n.to_proto()
+
+def conv_relu(bottom, nout, ks=3, stride=1, pad=1, learn=True):
+    if learn:
+        param = [dict(lr_mult=1, decay_mult=1), dict(lr_mult=2, decay_mult=0)]
+    else:
+        param = [dict(lr_mult=0, decay_mult=0), dict(lr_mult=0, decay_mult=0)]
+
+    conv = L.Convolution(bottom, kernel_size=ks, stride=stride,
+        num_output=nout, pad=pad, param=param)
+    return conv, L.ReLU(conv, in_place=True)
+
+def max_pool(bottom, ks=2, stride=2):
+    return L.Pooling(bottom, pool=P.Pooling.MAX, kernel_size=ks, stride=stride)

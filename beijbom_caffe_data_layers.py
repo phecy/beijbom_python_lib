@@ -12,8 +12,7 @@ import skimage.io
 
 # own class imports
 import caffe
-from beijbom_misc_tools import crop_and_rotate
-from beijbom_misc_tools import tile_image
+from beijbom_misc_tools import crop_and_rotate, tile_image, coral_image_resize
 from beijbom_caffe_tools import Transformer
 
 
@@ -27,7 +26,7 @@ class RandomPointDataLayer(caffe.Layer):
 
     def setup(self, bottom, top):
 
-        self.top_names = ['data', 'labels']
+        self.top_names = ['data', 'label']
 
         # === Read input parameters ===
         params = eval(self.param_str)
@@ -36,33 +35,36 @@ class RandomPointDataLayer(caffe.Layer):
         assert 'imdictfile' in params.keys(), 'Params must include imdictfile.'
         assert 'imgs_per_batch' in params.keys(), 'Params must include imgs_per_batch.'
         assert 'crop_size' in params.keys(), 'Params must include crop_size.'
-        assert 'im_scale' in params.keys(), 'Params must include im_scale.'
+        assert 'scaling_method' in params.keys(), 'Params must include scaling_method'
+        assert 'scaling_factor' in params.keys(), 'Params must include scaling_factor'
         assert 'im_mean' in params.keys(), 'Params must include im_mean.'
-        assert 'cache_images' in params.keys(), 'Params must include cache_images.'
 
         self.t0 = 0
         self.t1 = 0
+        
         self.batch_size = params['batch_size']
-        crop_size = params['crop_size']
-        cache_images = params['cache_images']
-        imgs_per_batch = params['imgs_per_batch']
         imlist = [line.rstrip('\n') for line in open(params['imlistfile'])]
         with open(params['imdictfile']) as f:
             imdict = json.load(f)
+        imgs_per_batch = params['imgs_per_batch']
+        crop_size = params['crop_size']
+        scaling_method = params['scaling_method']
+        scaling_factor = params['scaling_factor']
 
         transformer = TransformerWrapper()
         transformer.set_mean(params['im_mean'])
-        transformer.set_scale(params['im_scale'])
+        transformer.set_scale(1.0)
 
         # === Check some of the input variables
         assert len(imlist) >= imgs_per_batch, 'Image list must be longer than the number of images you ask for per batch.'
+        assert scaling_method in ('ratio', 'scale')
 
         print "Setting up RandomPointDataLayer with batch size:{}".format(self.batch_size)
 
         # === set up thread and batch advancer ===
         self.thread_result = {}
         self.thread = None
-        self.batch_advancer = PatchBatchAdvancer(self.thread_result, self.batch_size, imlist, imdict, imgs_per_batch, crop_size, transformer, cache_images)
+        self.batch_advancer = PatchBatchAdvancer(self.thread_result, self.batch_size, imlist, imdict, imgs_per_batch, crop_size, transformer, scaling_method, scaling_factor)
         self.dispatch_worker()
 
         # === reshape tops ===
@@ -82,6 +84,7 @@ class RandomPointDataLayer(caffe.Layer):
 
         for top_index, name in zip(range(len(top)), self.top_names):
             for i in range(self.batch_size):
+                #rint i, top_index, name
                 top[top_index].data[i, ...] = self.thread_result[name][i] 
         self.t0 = time.clock()
         self.dispatch_worker()
@@ -106,7 +109,8 @@ class PatchBatchAdvancer():
     """
     The PatchBatchAdvancer is a helper class to RandomPointDataLayer. It is called asychronosly and prepares the tops.
     """
-    def __init__(self, result, batch_size, imlist, imdict, imgs_per_batch, crop_size, transformer, cache_images):
+    def __init__(self, result, batch_size, imlist, imdict, imgs_per_batch, crop_size, transformer, scaling_method, scaling_factor):
+        self._cur = 0
         self.result = result
         self.batch_size = batch_size
         self.imlist = imlist
@@ -114,28 +118,16 @@ class PatchBatchAdvancer():
         self.imgs_per_batch = imgs_per_batch
         self.crop_size = crop_size
         self.transformer = transformer
-        self._cur = 0
-        self.cache_images = cache_images
-        self.imcache = {}
+        self.scaling_method = scaling_method
+        self.scaling_factor = scaling_factor
         shuffle(self.imlist)
-
-        if self.cache_images is True:
-            # Load all images to RAM
-            print "TMPBA is caching images"
-            t0 = timer()
-            for imname in self.imlist:
-                im = np.asarray(Image.open(imname))
-                im = np.pad(im, ((self.crop_size*2, self.crop_size*2),(self.crop_size*2, self.crop_size*2), (0, 0)), mode='reflect') 
-                self.imcache[imname] = im
-            print "TMPBA cached images in {} seconds".format(timer() - t0)
-
 
         print "PatchBatchAdvancer is initialized with {} images, {} imgs per batch, and {}x{} pixel patches".format(len(imlist), imgs_per_batch, crop_size, crop_size)
 
     def __call__(self):
         t1 = timer()
         self.result['data'] = []
-        self.result['labels'] = []
+        self.result['label'] = []
 
         if self._cur + self.imgs_per_batch >= len(self.imlist):
             self._cur = 0
@@ -148,7 +140,7 @@ class PatchBatchAdvancer():
         patches_per_image = self.chunkify(self.batch_size, self.imgs_per_batch)
 
         # Make nice output string
-        # output_str = [str(npatches) + ' from ' + os.path.basename(imname) + '(id ' + str(itt) + ')' for imname, npatches, itt in zip(imnames, patches_per_image, range(self._cur, self._cur + self.imgs_per_batch))]
+        output_str = [str(npatches) + ' from ' + os.path.basename(imname) + '(id ' + str(itt) + ')' for imname, npatches, itt in zip(imnames, patches_per_image, range(self._cur, self._cur + self.imgs_per_batch))]
         
         # Loop over each image
         for imname, npatches in zip(imnames, patches_per_image):
@@ -162,24 +154,22 @@ class PatchBatchAdvancer():
 
             # Randomly permute the patch list for this image. Sampling is done with replacement 
             # so that if we ask for more patches than is available, it still computes.
-            point_anns = self.imdict[os.path.basename(imname)][0]
+            (point_anns, height_cm) = self.imdict[os.path.basename(imname)]
             point_anns = [point_anns[pp] for pp in np.random.choice(len(point_anns), size = npatches, replace = True)]
 
-            if self.cache_images:
-                im = self.imcache[imname]
-            else:
-                # Load image
-                im = np.asarray(Image.open(imname))
-                # Pad the boundaries                        
-                im = np.pad(im, ((self.crop_size*2, self.crop_size*2),(self.crop_size*2, self.crop_size*2), (0, 0)), mode='reflect')        
-            
+            # Load image
+            im = np.asarray(Image.open(imname))
+            (im, scale) = coral_image_resize(im, self.scaling_method, self.scaling_factor, height_cm) #resize.
+
+            # Pad the boundaries                        
+            im = np.pad(im, ((self.crop_size*2, self.crop_size*2),(self.crop_size*2, self.crop_size*2), (0, 0)), mode='reflect')        
             for ((row, col, label), angle, flip) in zip(point_anns, angles, flips):
                 center_org = np.asarray([row, col])
-                center = np.round(self.crop_size*2 + center_org).astype(np.int)
+                center = np.round(self.crop_size*2 + center_org * scale).astype(np.int)
                 patch = self.transformer(crop_and_rotate(im, center, self.crop_size, angle, tile = False))
                 self.result['data'].append(patch[::flip, :, :])
-                self.result['labels'].append(label)
-        #print 'TMPBA finished in {} seconds.'.format(timer() - t1)
+                self.result['label'].append(label)
+        # print 'TMPBA finished in {} seconds.'.format(timer() - t1)
 
     def chunkify(self, k, n):
         """ 
@@ -208,7 +198,7 @@ class TransformerWrapper(Transformer):
 class RandomPointRegressionDataLayer(caffe.Layer):
 
     def setup(self, bottom, top):
-        self.top_names = ['data', 'labels']
+        self.top_names = ['data', 'label']
 
         # === Read input parameters ===
         params = eval(self.param_str)
@@ -299,7 +289,7 @@ class RegressionBatchAdvancer():
         
         t0 = timer()
         self.result['data'] = []
-        self.result['labels'] = []
+        self.result['label'] = []
 
         if self._cur == len(self.imlist):
             self._cur = 0
@@ -319,7 +309,7 @@ class RegressionBatchAdvancer():
 
                 
         self.result['data'].append(self.transformer.preprocess(im))
-        self.result['labels'].append(class_hist)
+        self.result['label'].append(class_hist)
         self._cur += 1
         # print "loaded image {} in {} secs.".format(self._cur, timer() - t0)
 
@@ -334,7 +324,7 @@ class RandomPointMultiLabelDataLayer(caffe.Layer):
 
     def setup(self, bottom, top):
 
-        self.top_names = ['data', 'labels']
+        self.top_names = ['data', 'label']
 
         # === Read input parameters ===
         params = eval(self.param_str)
@@ -423,7 +413,7 @@ class MultiLabelBatchAdvancer():
         
         t0 = timer()
         self.result['data'] = []
-        self.result['labels'] = []
+        self.result['label'] = []
 
         if self._cur == len(self.imlist):
             self._cur = 0
@@ -442,6 +432,6 @@ class MultiLabelBatchAdvancer():
 
                 
         self.result['data'].append(self.transformer.preprocess(im))
-        self.result['labels'].append(class_in_image)
+        self.result['label'].append(class_in_image)
         self._cur += 1
         # print "loaded image {} in {} secs.".format(self._cur, timer() - t0)
