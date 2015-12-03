@@ -51,9 +51,7 @@ class RandomPointDataLayer(caffe.Layer):
         scaling_method = params['scaling_method']
         scaling_factor = params['scaling_factor']
 
-        transformer = TransformerWrapper()
-        transformer.set_mean(params['im_mean'])
-        transformer.set_scale(1.0)
+        transformer = TransformerWrapper(params['im_mean'])
 
         # === Check some of the input variables
         assert len(imlist) >= imgs_per_batch, 'Image list must be longer than the number of images you ask for per batch.'
@@ -181,8 +179,8 @@ class PatchBatchAdvancer():
         
 
 class TransformerWrapper(Transformer):
-    def __init__(self):
-        Transformer.__init__(self)
+    def __init__(self, mean):
+        Transformer.__init__(self, mean)
     def __call__(self, im):
         return self.preprocess(im)
 

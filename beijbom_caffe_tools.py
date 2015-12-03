@@ -23,7 +23,7 @@ class Transformer:
     """
 
     def __init__(self, mean = [0, 0, 0]):
-        self.mean = mean
+        self.mean = np.array(mean, dtype=np.float32)
         self.scale = 1.0
 
     def set_mean(self, mean):
@@ -43,12 +43,11 @@ class Transformer:
         preprocess() emulate the pre-processing occuring in the vgg16 caffe prototxt.
         """
     
-        im = np.float32(im)    
-        for channel, channel_mean in list(enumerate(self.mean)):
-            im[:, :, channel] = im[:, :, channel] - np.ones(im.shape[:2], dtype=np.uint8) * channel_mean
-    
-        im = im * self.scale
-        im = im.transpose(2, 0, 1)
+        im = np.float32(im)
+        im = im[:, :, ::-1] #change to BGR
+        im -= self.mean
+        im *= self.scale
+        im = im.transpose((2, 0, 1))
         
         return im
 
@@ -58,9 +57,8 @@ class Transformer:
         """
         im = im.transpose(1, 2, 0)
         im /= self.scale
-
-        for channel, channel_mean in list(enumerate(self.mean)):
-            im[:, :, channel] = im[:, :, channel] + np.ones(im.shape[:2], dtype=np.uint8) * channel_mean
+        im += self.mean
+        im = im[:, :, ::-1] #change to RGB
         
         return np.uint8(im)
 
@@ -489,9 +487,14 @@ def find_latest_caffemodel(workdir, snapshot_prefix = 'snapshot'):
 
 
 def calculate_image_mean(imlist): 
+    """
+    Returns mean channel intensity across the images in imlist.
+    NOTE: returns mean in in BGR order.
+    """
     mean = np.zeros(3).astype(np.float32)
     for imname in imlist:
         im = np.asarray(Image.open(imname))
+        im = im[:, :, ::-1] #change to BGR
         im = np.mean(im, axis = 0)
         im = np.mean(im, axis = 0)
         mean = mean + im
