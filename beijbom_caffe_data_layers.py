@@ -43,6 +43,7 @@ class RandomPointDataLayer(caffe.Layer):
         self.batch_size = params['batch_size']
 
         # === Check some of the input variables
+        imlist = [line.rstrip('\n') for line in open(params['imlistfile'])]
         assert len(imlist) >= imgs_per_batch, 'Image list must be longer than the number of images you ask for per batch.'
         assert scaling_method in ('ratio', 'scale')
 
