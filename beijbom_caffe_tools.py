@@ -567,8 +567,8 @@ def vgg(pydata_params, data_layer, nclasses, ntop = 2, acclayer = False):
     
     if acclayer:
         n.accuracy = L.Accuracy(n.score, n.label)
-
-    return n.to_proto()
+    return n
+    #return n.to_proto()
 
 def conv_relu(bottom, nout, ks=3, stride=1, pad=1, learn=True):
     if learn:
