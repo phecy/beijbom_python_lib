@@ -150,7 +150,9 @@ def run(workdir = None, caffemodel = None, GPU_id = 0, solverfile = 'solver.prot
 
     # find initial caffe model
     if not caffemodel:
-        caffemodel = os.path.basename(glob.glob(os.path.join(workdir, "*initial.caffemodel"))[0])
+        caffemodel = glob.glob(os.path.join(workdir, "*initial.caffemodel"))
+        if caffemodel:
+            caffemodel = os.path.basename(caffemodel[0])
 
     # finds the latest snapshots
     snapshots = glob.glob(os.path.join(workdir, "{}*.solverstate".format(snapshot_prefix)))
@@ -494,10 +496,15 @@ def calculate_image_mean(imlist):
     mean = np.zeros(3).astype(np.float32)
     for imname in imlist:
         im = np.asarray(Image.open(imname))
-        im = im[:, :, ::-1] #change to BGR
-        im = np.mean(im, axis = 0)
-        im = np.mean(im, axis = 0)
-        mean = mean + im
+        if len(im.shape) == 2:
+            im = np.mean(im, axis = 0)
+            im = np.mean(im, axis = 0)
+            mean = mean + [im, im, im]
+        else:   
+            im = im[:, :, ::-1] #change to BGR
+            im = np.mean(im, axis = 0)
+            im = np.mean(im, axis = 0)
+            mean = mean + im
     mean /= len(imlist)
     print mean
     return mean
@@ -514,7 +521,7 @@ def clean_workdirs(workdirs):
         for file_ in glob.glob(os.path.join(workdir, '*.log')):
             if os.path.isfile(file_):
                 os.remove(file_)
-	for file_ in glob.glob(os.path.join(workdir, '*.testlog')):
+    for file_ in glob.glob(os.path.join(workdir, '*.testlog')):
             if os.path.isfile(file_):
                 os.remove(file_)
 
@@ -582,3 +589,70 @@ def conv_relu(bottom, nout, ks=3, stride=1, pad=1, learn=True):
 
 def max_pool(bottom, ks=2, stride=2):
     return L.Pooling(bottom, pool=P.Pooling.MAX, kernel_size=ks, stride=stride)
+
+def residual_standard_unit(bottom, nout, newdepth = False, learn = True):
+    """
+    This creates the first unit of each channel size.
+    """
+    if learn:
+        param = [dict(lr_mult=1, decay_mult=1), dict(lr_mult=2, decay_mult=0)]
+    else:
+        param = [dict(lr_mult=0, decay_mult=0), dict(lr_mult=0, decay_mult=0)]
+	
+	stride = 2 if newdepth else 1
+	conv1 = L.Convolution(bottom, kernel_size = 3, stride = stride, num_output = nout, weight_filler=dict(type="xavier"), bias_filler=dict(type="constant"), pad=pad, param=param)
+    bn1 = L.BatchNorm(conv1)
+    relu1 = L.ReLU(bn1, in_place=True)
+    conv2 = L.Convolution(relu1, kernel_size = 3, stride = 1,
+        num_output=nout, weight_filler=dict(type="xavier"), bias_filler=dict(type="constant"), pad=pad, param=param)
+    bn2 = L.BatchNorm(conv2)
+   
+	if newdepth: 
+    	conv_compress = L.Convolution(bottom, kernel_size = 1, stride = 2, num_output = nout, pad = 0, param=param)
+    	eltwise = L.Eltwise(bn2, conv_compress)
+	else:
+		conv_compress = ''
+		eltwise = L.Eltwise(bn2, bottom)
+
+    relu2 = L.ReLU(eltwise, in_place=True)
+    return conv1, conv2, relu1, relu2, bn1, bn2, conv_compress, eltwise 
+
+def residual_net(total_depth, data_layer_params, num_classes = 1000, acclayer = True):
+	# figure out network structure
+	net_defs = {
+    	18:([2, 2, 2, 2], "standard"),
+    	34:([3, 4, 6, 3], "standard"),
+    	50:([3, 4, 6, 3], "bottleneck"),
+    	101:([3, 4, 23, 3], "bottleneck"),
+    	152:([3, 8, 36, 3], "bottleneck"),
+	}
+	nlayers, unit_type = net_defs[total_depth]
+    depths = [64, 128, 256, 512]
+
+
+    n = caffe.NetSpec()
+    n.data, n.label = L.Python(module = 'beijbom_caffe_data_layers', layer = 'ImageNetDataLayer',
+                ntop = 2, param_str=str(data_layer_params))
+    n.conv1 = L.Convolution(n.data, kernel_size = 7, stride = 2, num_output = 64, weight_filler=dict(type="xavier"), bias_filler=dict(type="constant"), pad = 3, param = [dict(lr_mult=1, decay_mult=1), dict(lr_mult=2, decay_mult=0)])
+    n.bn1 = L.BatchNorm(n.conv1)
+    n.pool1 = L.Pooling(n.bn1, stride = 2, kernel_size = 3)
+    
+    for depth, nlayers in zip(depths, nlayerss):
+        for layeritt in range(1, nlayers + 1):
+            s = str(depth) + '_' + str(layeritt) + '_' # layer name convenience variable
+            if layeritt is 1 and depth>64:
+                n.__dict__['tops'][s + 'conv1'], n.__dict__['tops'][s + 'conv2'], n.__dict__['tops'][s + 'relu1'], n.__dict__['tops'][s + 'relu2'], n.__dict__['tops'][s + 'bn1'], n.__dict__['tops'][s + 'bn2'], n.__dict__['tops'][s + 'conv_compress'], n.__dict__['tops'][s + 'sum'] = residual_standard_unit_first(n.__dict__['tops'][n.__dict__['tops'].keys()[-1]], depth, newdepth = True)
+            else:
+                n.__dict__['tops'][s + 'conv1'], n.__dict__['tops'][s + 'conv2'], n.__dict__['tops'][s + 'relu1'], n.__dict__['tops'][s + 'relu2'], n.__dict__['tops'][s + 'bn1'], n.__dict__['tops'][s + 'bn2'], _, n.__dict__['tops'][s + 'sum'] = residual_standard_unit(n.__dict__['tops'][n.__dict__['tops'].keys()[-1]], depth, newdepth = False)
+
+    n.global_pool = L.Pooling(n.__dict__['tops'][n.__dict__['tops'].keys()[-1]], pooling_param = dict(pool=1, global_pooling=True))
+    n.score = L.InnerProduct(n.global_pool, num_output = num_classes,
+        param=[dict(lr_mult=1, decay_mult=1), dict(lr_mult=2, decay_mult=0)])
+
+    n.loss = L.SoftmaxWithLoss(n.score, n.label)
+    
+    if acclayer:
+        n.accuracy = L.Accuracy(n.score, n.label)
+
+    return n            
+
