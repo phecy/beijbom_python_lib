@@ -675,7 +675,8 @@ def residual_net(total_depth, data_layer_params, num_classes = 1000, acclayer = 
                 ntop = 2, param_str=str(data_layer_params))
     n.conv1 = L.Convolution(n.data, kernel_size = 7, stride = 2, num_output = 64, weight_filler=dict(type="xavier"), bias_filler=dict(type="constant"), pad = 3, param = [dict(lr_mult=1, decay_mult=1), dict(lr_mult=2, decay_mult=0)])
     n.bn1 = L.BatchNorm(n.conv1)
-    n.pool1 = L.Pooling(n.bn1, stride = 2, kernel_size = 3)
+    n.relu1 = L.ReLU(n.bn1, in_place=True)
+    n.pool1 = L.Pooling(n.relu1, stride = 2, kernel_size = 3)
     
     if unit_type == "standard": #net uses the two-layer unit
         # for each depth and nlayers
