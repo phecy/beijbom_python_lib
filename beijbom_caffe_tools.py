@@ -16,7 +16,6 @@ from beijbom_misc_tools import coral_image_resize, crop_and_rotate
 beijbom_caffe_tools (bct) contains classes and wrappers for caffe.
 """
 
-
 class Transformer:
     """
     Transformer is a class for preprocessing and deprocessing images according to the vgg16 pre-processing paradigm (scaling and mean subtraction.)
@@ -609,10 +608,11 @@ def residual_standard_unit(bottom, nout, newdepth = False, learn = True):
    
     if newdepth: 
         conv_compress = L.Convolution(bottom, kernel_size = 1, stride = 2, num_output = nout, pad = 0, param = param)
-        bn_compress = L.BathNorm(conv_compress)
+        bn_compress = L.BatchNorm(conv_compress)
         sumlayer = L.Eltwise(bn2, bn_compress)
     else:
         conv_compress = ''
+        bn_compress = ''
         sumlayer = L.Eltwise(bn2, bottom)
 
     relu2 = L.ReLU(sumlayer, in_place=True)
@@ -628,23 +628,24 @@ def residual_bottleneck_unit(bottom, nout, newdepth = False, learn = True):
         param = [dict(lr_mult=0, decay_mult=0), dict(lr_mult=0, decay_mult=0)]
     
     stride = 2 if newdepth else 1
-    conv1 = L.Convolution(bottom, kernel_size = 1, pad = 0, stride = stride, num_output = nout, weight_filler=dict(type="xavier"), bias_filler=dict(type="constant"), pad=pad, param=param)
+    conv1 = L.Convolution(bottom, kernel_size = 1, pad = 0, stride = stride, num_output = nout, weight_filler=dict(type="xavier"), bias_filler=dict(type="constant"), param=param)
     bn1 = L.BatchNorm(conv1)
     relu1 = L.ReLU(bn1, in_place=True)
-    conv2 = L.Convolution(relu1, kernel_size = 3, stride = 1,
-        num_output=nout, weight_filler=dict(type="xavier"), bias_filler=dict(type="constant"), pad=pad, param=param)
+    conv2 = L.Convolution(relu1, kernel_size = 3, stride = 1, pad = 1,
+        num_output=nout, weight_filler=dict(type="xavier"), bias_filler=dict(type="constant"), param=param)
     bn2 = L.BatchNorm(conv2)
     relu2 = L.ReLU(bn2, in_place=True)
-    conv3 = L.Convolution(relu2, kernel_size = 1, stride = 1,
-        num_output = nout * 4, weight_filler = dict(type="xavier"), bias_filler = dict(type="constant"), pad=pad, param=param)
+    conv3 = L.Convolution(relu2, kernel_size = 1, stride = 1, pad = 0,
+        num_output = nout * 4, weight_filler = dict(type="xavier"), bias_filler = dict(type="constant"), param=param)
     bn3 = L.BatchNorm(conv3)
    
     if newdepth: 
         conv_compress = L.Convolution(bottom, kernel_size = 1, stride = 2, num_output = nout * 4, pad = 0, param=param)
-        bn_compress = L.BathNorm(conv_compress)
+        bn_compress = L.BatchNorm(conv_compress)
         sumlayer = L.Eltwise(bn3, bn_compress)
     else:
         conv_compress = ''
+        bn_compress = ''
         sumlayer = L.Eltwise(bn3, bottom)
 
     relu3 = L.ReLU(sumlayer, in_place=True)
@@ -663,8 +664,7 @@ def residual_net(total_depth, data_layer_params, num_classes = 1000, acclayer = 
         101:([3, 4, 23, 3], "bottleneck"),
         152:([3, 8, 36, 3], "bottleneck"),
     }
-    if not total_depth in net_defs.keys():
-        raise("net of depth:{} not defined".format(total_depth))
+    assert total_depth in net_defs.keys(), "net of depth:{} not defined".format(total_depth)
 
     nlayerss, unit_type = net_defs[total_depth] #nlayerss is "double plural" for a list of integers indicating the number of layers in each depth type.
     depths = [64, 128, 256, 512]
@@ -691,7 +691,7 @@ def residual_net(total_depth, data_layer_params, num_classes = 1000, acclayer = 
         for depth, nlayers in zip(depths, nlayerss):
             for layeritt in range(1, nlayers + 1):
                 s = str(depth) + '_' + str(layeritt) + '_' # layer name convenience variable
-                if layeritt is 1 and depth>64: # in these situations we enter a new width & depth.
+                if layeritt is 1: 
                     n.__dict__['tops'][s + 'conv1'], n.__dict__['tops'][s + 'conv2'], n.__dict__['tops'][s + 'conv3'], n.__dict__['tops'][s + 'relu1'], n.__dict__['tops'][s + 'relu2'], n.__dict__['tops'][s + 'relu3'], n.__dict__['tops'][s + 'bn1'], n.__dict__['tops'][s + 'bn2'], n.__dict__['tops'][s + 'bn3'], n.__dict__['tops'][s + 'conv_compress'], n.__dict__['tops'][s + 'bn_compress'], n.__dict__['tops'][s + 'sum'] = residual_bottleneck_unit(n.__dict__['tops'][n.__dict__['tops'].keys()[-1]], depth, newdepth = True)
                 else: # same width and depth as previously.
                     n.__dict__['tops'][s + 'conv1'], n.__dict__['tops'][s + 'conv2'], n.__dict__['tops'][s + 'conv3'], n.__dict__['tops'][s + 'relu1'], n.__dict__['tops'][s + 'relu2'], n.__dict__['tops'][s + 'relu3'], n.__dict__['tops'][s + 'bn1'], n.__dict__['tops'][s + 'bn2'], n.__dict__['tops'][s + 'bn3'], _, _, n.__dict__['tops'][s + 'sum'] = residual_bottleneck_unit(n.__dict__['tops'][n.__dict__['tops'].keys()[-1]], depth, newdepth = False)
