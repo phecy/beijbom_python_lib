@@ -589,68 +589,60 @@ def conv_relu(bottom, nout, ks=3, stride=1, pad=1, learn=True):
 def max_pool(bottom, ks=2, stride=2):
     return L.Pooling(bottom, pool=P.Pooling.MAX, kernel_size=ks, stride=stride)
 
-def residual_standard_unit(bottom, nout, newdepth = False, learn = True):
-    """
-    This creates the "standard unit" shown on the left side of Figure 5.
-    """
+def conv_bn(bottom, nout, ks = 3, stride=1, pad = 0, learn = True):
     if learn:
         param = [dict(lr_mult=1, decay_mult=1), dict(lr_mult=2, decay_mult=0)]
     else:
         param = [dict(lr_mult=0, decay_mult=0), dict(lr_mult=0, decay_mult=0)]
     
-    stride = 2 if newdepth else 1
-    conv1 = L.Convolution(bottom, kernel_size = 3, stride = stride, num_output = nout, weight_filler=dict(type="xavier"), bias_filler=dict(type="constant"), pad = 1, param = param)
-    bn1 = L.BatchNorm(conv1)
-    relu1 = L.ReLU(bn1, in_place=True)
-    conv2 = L.Convolution(relu1, kernel_size = 3, stride = 1,
-        num_output=nout, weight_filler=dict(type="xavier"), bias_filler=dict(type="constant"), pad = 1, param = param)
-    bn2 = L.BatchNorm(conv2)
-   
-    if newdepth: 
-        conv_compress = L.Convolution(bottom, kernel_size = 1, stride = 2, num_output = nout, pad = 0, param = param)
-        bn_compress = L.BatchNorm(conv_compress)
-        sumlayer = L.Eltwise(bn2, bn_compress)
-    else:
-        conv_compress = ''
-        bn_compress = ''
-        sumlayer = L.Eltwise(bn2, bottom)
+    conv = L.Convolution(bottom, kernel_size=ks, stride=stride,
+            num_output=nout, pad=pad, param = param, weight_filler=dict(type="msra"), bias_filler=dict(type="constant"))
+    bn = L.BatchNorm(conv)
+    lrn = L.LRNLayer(bn)
+    return conv, bn, lrn
 
-    relu2 = L.ReLU(sumlayer, in_place=True)
-    return conv1, conv2, relu1, relu2, bn1, bn2, conv_compress, bn_compress, sumlayer 
 
-def residual_bottleneck_unit(bottom, nout, newdepth = False, learn = True):
+def residual_standard_unit(n, nout, s, newdepth = False):
     """
     This creates the "standard unit" shown on the left side of Figure 5.
     """
-    if learn:
-        param = [dict(lr_mult=1, decay_mult=1), dict(lr_mult=2, decay_mult=0)]
-    else:
-        param = [dict(lr_mult=0, decay_mult=0), dict(lr_mult=0, decay_mult=0)]
-    
+    bottom = n.__dict__['tops'][n.__dict__['tops'].keys()[-1]] #find the last layer in netspec
     stride = 2 if newdepth else 1
-    conv1 = L.Convolution(bottom, kernel_size = 1, pad = 0, stride = stride, num_output = nout, weight_filler=dict(type="xavier"), bias_filler=dict(type="constant"), param=param)
-    bn1 = L.BatchNorm(conv1)
-    relu1 = L.ReLU(bn1, in_place=True)
-    conv2 = L.Convolution(relu1, kernel_size = 3, stride = 1, pad = 1,
-        num_output=nout, weight_filler=dict(type="xavier"), bias_filler=dict(type="constant"), param=param)
-    bn2 = L.BatchNorm(conv2)
-    relu2 = L.ReLU(bn2, in_place=True)
-    conv3 = L.Convolution(relu2, kernel_size = 1, stride = 1, pad = 0,
-        num_output = nout * 4, weight_filler = dict(type="xavier"), bias_filler = dict(type="constant"), param=param)
-    bn3 = L.BatchNorm(conv3)
+
+    n[s + 'conv1'], n[s + 'bn1'], n[s + 'lrn1'] = conv_bn(bottom, ks = 3, stride = stride, nout = nout, pad = 1)
+    n[s + 'relu1'] = L.ReLU(s + 'lrn1', in_place=True)
+    n[s + 'conv2'], n[s + 'bn2'], n[s + 'lrn2'] = conv_bn(s + 'relu1', ks = 3, stride = 1, nout = nout, pad = 1)
    
     if newdepth: 
-        conv_compress = L.Convolution(bottom, kernel_size = 1, stride = 2, num_output = nout * 4, pad = 0, param=param)
-        bn_compress = L.BatchNorm(conv_compress)
-        sumlayer = L.Eltwise(bn3, bn_compress)
+        n[s + 'conv_expand'], n[s + 'bn_expand'], [s + 'lrn_expand'] = conv_bn(bottom, ks = 1, stride = 2, nout = nout, pad = 0)
+        n[s + 'sum'] = L.Eltwise(s + 'lrn2', s + 'lrn_expand')
     else:
-        conv_compress = ''
-        bn_compress = ''
-        sumlayer = L.Eltwise(bn3, bottom)
+        n[s + 'sum'] = L.Eltwise(s + 'lrn2', bottom)
 
-    relu3 = L.ReLU(sumlayer, in_place=True)
-    return conv1, conv2, conv3, relu1, relu2, relu3, bn1, bn2, bn3, conv_compress, bn_compress, sumlayer 
+    n[s + 'relu2'] = L.ReLU(s + 'sum', in_place=True)
+    
 
+def residual_bottleneck_unit(n, nout, s, newdepth = False):
+    """
+    This creates the "standard unit" shown on the left side of Figure 5.
+    """
+    
+    bottom = n.__dict__['tops'][n.__dict__['tops'].keys()[-1]] #find the last layer in netspec
+    stride = 2 if newdepth else 1
+
+    n[s + 'conv1'], n[s + 'bn1'], n[s + 'lrn1'] = conv_bn(bottom, ks = 1, stride = stride, nout = nout, pad = 0)
+    n[s + 'relu1'] = L.ReLU(s + 'lrn1', in_place=True)
+    n[s + 'conv2'], n[s + 'bn2'], n[s + 'lrn2'] = conv_bn(s + 'relu1', ks = 3, stride = 1, nout = nout, pad = 1)
+    n[s + 'relu2'] = L.ReLU(s + 'lrn2', in_place=True)
+    n[s + 'conv3'], n[s + 'bn3'], n[s + 'lrn3'] = conv_bn(s + 'relu2', ks = 1, stride = stride, nout = nout * 4, pad = 0)
+   
+    if newdepth: 
+        n[s + 'conv_expand'], n[s + 'bn_expand'], [s + 'lrn_expand'] = conv_bn(bottom, ks = 1, stride = 2, nout = nout * 4, pad = 0)
+        n[s + 'sum'] = L.Eltwise(s + 'lrn3', s + 'lrn_expand')
+    else:
+        n[s + 'sum'] = L.Eltwise(s + 'lrn3', bottom)
+
+    n[s + 'relu3'] = L.ReLU(s + 'sum', in_place=True)
 
 def residual_net(total_depth, data_layer_params, num_classes = 1000, acclayer = True):
     """
@@ -666,43 +658,31 @@ def residual_net(total_depth, data_layer_params, num_classes = 1000, acclayer = 
     }
     assert total_depth in net_defs.keys(), "net of depth:{} not defined".format(total_depth)
 
-    nlayerss, unit_type = net_defs[total_depth] #nlayerss is "double plural" for a list of integers indicating the number of layers in each depth type.
-    depths = [64, 128, 256, 512]
+    nunits_list, unit_type = net_defs[total_depth] # nunits_list a list of integers indicating the number of layers in each depth.
+    nouts = [64, 128, 256, 512] # same for all nets
 
     # setup the first couple of layers
     n = caffe.NetSpec()
     n.data, n.label = L.Python(module = 'beijbom_caffe_data_layers', layer = 'ImageNetDataLayer',
                 ntop = 2, param_str=str(data_layer_params))
-    n.conv1 = L.Convolution(n.data, kernel_size = 7, stride = 2, num_output = 64, weight_filler=dict(type="xavier"), bias_filler=dict(type="constant"), pad = 3, param = [dict(lr_mult=1, decay_mult=1), dict(lr_mult=2, decay_mult=0)])
-    n.bn1 = L.BatchNorm(n.conv1)
-    n.relu1 = L.ReLU(n.bn1, in_place=True)
+    n.conv1, n.bn1, n.lrn1 = conv_bn(bottom, ks = 7, stride = 2, nout = 64, pad = 3)
+    n.relu1 = L.ReLU(n.lrn1, in_place=True)
     n.pool1 = L.Pooling(n.relu1, stride = 2, kernel_size = 3)
     
-    if unit_type == "standard": #net uses the two-layer unit
-        # for each depth and nlayers
-        for depth, nlayers in zip(depths, nlayerss):
-            for layeritt in range(1, nlayers + 1):
-                s = str(depth) + '_' + str(layeritt) + '_' # layer name convenience variable
-                if layeritt is 1 and depth>64: # in these situations we enter a new width & depth.
-                    n.__dict__['tops'][s + 'conv1'], n.__dict__['tops'][s + 'conv2'], n.__dict__['tops'][s + 'relu1'], n.__dict__['tops'][s + 'relu2'], n.__dict__['tops'][s + 'bn1'], n.__dict__['tops'][s + 'bn2'], n.__dict__['tops'][s + 'conv_compress'], n.__dict__['tops'][s + 'bn_compress'], n.__dict__['tops'][s + 'sum'] = residual_standard_unit(n.__dict__['tops'][n.__dict__['tops'].keys()[-1]], depth, newdepth = True)
-                else: # same width and depth as previously.
-                    n.__dict__['tops'][s + 'conv1'], n.__dict__['tops'][s + 'conv2'], n.__dict__['tops'][s + 'relu1'], n.__dict__['tops'][s + 'relu2'], n.__dict__['tops'][s + 'bn1'], n.__dict__['tops'][s + 'bn2'], _, _, n.__dict__['tops'][s + 'sum'] = residual_standard_unit(n.__dict__['tops'][n.__dict__['tops'].keys()[-1]], depth, newdepth = False)
-    else: #net uses the three-layer bottleneck unit
-        # for each depth and nlayers
-        for depth, nlayers in zip(depths, nlayerss):
-            for layeritt in range(1, nlayers + 1):
-                s = str(depth) + '_' + str(layeritt) + '_' # layer name convenience variable
-                if layeritt is 1: 
-                    n.__dict__['tops'][s + 'conv1'], n.__dict__['tops'][s + 'conv2'], n.__dict__['tops'][s + 'conv3'], n.__dict__['tops'][s + 'relu1'], n.__dict__['tops'][s + 'relu2'], n.__dict__['tops'][s + 'relu3'], n.__dict__['tops'][s + 'bn1'], n.__dict__['tops'][s + 'bn2'], n.__dict__['tops'][s + 'bn3'], n.__dict__['tops'][s + 'conv_compress'], n.__dict__['tops'][s + 'bn_compress'], n.__dict__['tops'][s + 'sum'] = residual_bottleneck_unit(n.__dict__['tops'][n.__dict__['tops'].keys()[-1]], depth, newdepth = True)
-                else: # same width and depth as previously.
-                    n.__dict__['tops'][s + 'conv1'], n.__dict__['tops'][s + 'conv2'], n.__dict__['tops'][s + 'conv3'], n.__dict__['tops'][s + 'relu1'], n.__dict__['tops'][s + 'relu2'], n.__dict__['tops'][s + 'relu3'], n.__dict__['tops'][s + 'bn1'], n.__dict__['tops'][s + 'bn2'], n.__dict__['tops'][s + 'bn3'], _, _, n.__dict__['tops'][s + 'sum'] = residual_bottleneck_unit(n.__dict__['tops'][n.__dict__['tops'].keys()[-1]], depth, newdepth = False)
+    # make the convolutional body
+    for nout, nunits in zip(nouts, nunits_list): # for each depth and nunits
+        for unit in range(1, nunits + 1): # for each unit. Enumerate from 1.
+            s = str(nout) + '_' + str(unit) + '_' # layer name prefix
+            if unit_type == "standard":
+                residual_standard_unit(n, nout, s, newdepth = unit is 1 and nout > 64)
+            else:
+                residual_bottleneck_unit(n, nout, s, newdepth = unit is 1)
+                
     # add the end layers                    
-    n.global_pool = L.Pooling(n.__dict__['tops'][n.__dict__['tops'].keys()[-1]], pooling_param = dict(pool=1, global_pooling=True))
+    n.global_pool = L.Pooling(n.__dict__['tops'][n.__dict__['tops'].keys()[-1]], pooling_param = dict(pool = 1, global_pooling = True))
     n.score = L.InnerProduct(n.global_pool, num_output = num_classes,
         param=[dict(lr_mult=1, decay_mult=1), dict(lr_mult=2, decay_mult=0)])
-
     n.loss = L.SoftmaxWithLoss(n.score, n.label)
-    
     if acclayer:
         n.accuracy = L.Accuracy(n.score, n.label)
 
