@@ -598,7 +598,7 @@ def conv_bn(bottom, nout, ks = 3, stride=1, pad = 0, learn = True):
     conv = L.Convolution(bottom, kernel_size=ks, stride=stride,
             num_output=nout, pad=pad, param = param, weight_filler=dict(type="msra"), bias_filler=dict(type="constant"))
     bn = L.BatchNorm(conv)
-    lrn = L.LRNLayer(bn)
+    lrn = L.LRN(bn)
     return conv, bn, lrn
 
 
@@ -614,7 +614,7 @@ def residual_standard_unit(n, nout, s, newdepth = False):
     n[s + 'conv2'], n[s + 'bn2'], n[s + 'lrn2'] = conv_bn(s + 'relu1', ks = 3, stride = 1, nout = nout, pad = 1)
    
     if newdepth: 
-        n[s + 'conv_expand'], n[s + 'bn_expand'], [s + 'lrn_expand'] = conv_bn(bottom, ks = 1, stride = 2, nout = nout, pad = 0)
+        n[s + 'conv_expand'], n[s + 'bn_expand'], n[s + 'lrn_expand'] = conv_bn(bottom, ks = 1, stride = 2, nout = nout, pad = 0)
         n[s + 'sum'] = L.Eltwise(s + 'lrn2', s + 'lrn_expand')
     else:
         n[s + 'sum'] = L.Eltwise(s + 'lrn2', bottom)
@@ -627,22 +627,22 @@ def residual_bottleneck_unit(n, nout, s, newdepth = False):
     This creates the "standard unit" shown on the left side of Figure 5.
     """
     
-    bottom = n.__dict__['tops'][n.__dict__['tops'].keys()[-1]] #find the last layer in netspec
+    bottom = n.__dict__['tops'].keys()[-1] #find the last layer in netspec
     stride = 2 if newdepth else 1
 
-    n[s + 'conv1'], n[s + 'bn1'], n[s + 'lrn1'] = conv_bn(bottom, ks = 1, stride = stride, nout = nout, pad = 0)
-    n[s + 'relu1'] = L.ReLU(s + 'lrn1', in_place=True)
-    n[s + 'conv2'], n[s + 'bn2'], n[s + 'lrn2'] = conv_bn(s + 'relu1', ks = 3, stride = 1, nout = nout, pad = 1)
-    n[s + 'relu2'] = L.ReLU(s + 'lrn2', in_place=True)
-    n[s + 'conv3'], n[s + 'bn3'], n[s + 'lrn3'] = conv_bn(s + 'relu2', ks = 1, stride = stride, nout = nout * 4, pad = 0)
+    n[s + 'conv1'], n[s + 'bn1'], n[s + 'lrn1'] = conv_bn(n[bottom], ks = 1, stride = stride, nout = nout, pad = 0)
+    n[s + 'relu1'] = L.ReLU(n[s + 'lrn1'], in_place=True)
+    n[s + 'conv2'], n[s + 'bn2'], n[s + 'lrn2'] = conv_bn(n[s + 'relu1'], ks = 3, stride = 1, nout = nout, pad = 1)
+    n[s + 'relu2'] = L.ReLU(n[s + 'lrn2'], in_place=True)
+    n[s + 'conv3'], n[s + 'bn3'], n[s + 'lrn3'] = conv_bn(n[s + 'relu2'], ks = 1, stride = stride, nout = nout * 4, pad = 0)
    
     if newdepth: 
-        n[s + 'conv_expand'], n[s + 'bn_expand'], [s + 'lrn_expand'] = conv_bn(bottom, ks = 1, stride = 2, nout = nout * 4, pad = 0)
-        n[s + 'sum'] = L.Eltwise(s + 'lrn3', s + 'lrn_expand')
+        n[s + 'conv_expand'], n[s + 'bn_expand'], n[s + 'lrn_expand'] = conv_bn(n[bottom], ks = 1, stride = 2, nout = nout * 4, pad = 0)
+        n[s + 'sum'] = L.Eltwise(n[s + 'lrn3'], n[s + 'lrn_expand'])
     else:
-        n[s + 'sum'] = L.Eltwise(s + 'lrn3', bottom)
+        n[s + 'sum'] = L.Eltwise(n[s + 'lrn3'], n[bottom])
 
-    n[s + 'relu3'] = L.ReLU(s + 'sum', in_place=True)
+    n[s + 'relu3'] = L.ReLU(n[s + 'sum'], in_place=True)
 
 def residual_net(total_depth, data_layer_params, num_classes = 1000, acclayer = True):
     """
@@ -665,7 +665,7 @@ def residual_net(total_depth, data_layer_params, num_classes = 1000, acclayer = 
     n = caffe.NetSpec()
     n.data, n.label = L.Python(module = 'beijbom_caffe_data_layers', layer = 'ImageNetDataLayer',
                 ntop = 2, param_str=str(data_layer_params))
-    n.conv1, n.bn1, n.lrn1 = conv_bn(bottom, ks = 7, stride = 2, nout = 64, pad = 3)
+    n.conv1, n.bn1, n.lrn1 = conv_bn(n.data, ks = 7, stride = 2, nout = 64, pad = 3)
     n.relu1 = L.ReLU(n.lrn1, in_place=True)
     n.pool1 = L.Pooling(n.relu1, stride = 2, kernel_size = 3)
     
